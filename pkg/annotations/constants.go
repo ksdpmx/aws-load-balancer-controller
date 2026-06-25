@@ -120,4 +120,8 @@ const (
 	SvcLBSuffixLoadBalancerCapacityReservation           = "aws-load-balancer-minimum-load-balancer-capacity"
 	SvcLBSuffixEnableIcmpForPathMtuDiscovery             = "aws-load-balancer-enable-icmp-for-path-mtu-discovery"
 	SvcLBSuffixEnableTCPUDPListener                      = "aws-load-balancer-enable-tcp-udp-listener"
+
+	AnnotationPrefixSK8s         = "sk8s.lexisnexis.dev"
+	ManagedSGsSplitEnabled       = "managed-sgs-split-enabled"
+	ManagedSGsSplitMaxRulesPerSG = "managed-sgs-split-max-rules-per-sg"
 )

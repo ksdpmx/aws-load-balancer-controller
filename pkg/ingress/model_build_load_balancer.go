@@ -283,25 +283,11 @@ func (t *defaultModelBuildTask) buildLoadBalancerSecurityGroups(ctx context.Cont
 	}
 	var lbSGTokens []core.StringToken
 	if len(sgNameOrIDsViaAnnotation) == 0 {
-		for port, cfg := range listenPortConfigByPort {
-			t.logger.Info(
-				"debugdebugdebug",
-				"port", port,
-				"protocol", cfg.protocol,
-				"inboundCIDRv4s", cfg.inboundCIDRv4s,
-				"inboundCIDRv6s", cfg.inboundCIDRv6s,
-				"prefixLists", cfg.prefixLists,
-				"sslPolicy", awssdk.ToString(cfg.sslPolicy),
-				"tlsCerts", cfg.tlsCerts,
-				"mutualAuthentication", fmt.Sprintf("%+v", cfg.mutualAuthentication),
-			)
+		managedSGsSplitEnabled, managedSGsSplitMaxRulesPerSG, err := t.buildManagedSGsSplitConfig(ctx)
+		if err != nil {
+			return nil, err
 		}
-		// TODO read from annotations
-		managedSGsSplitEnabled := true
-		managedSGsSplitMaxRulesPerSG := 8 // testing
-		if managedSGsSplitEnabled && managedSGsSplitMaxRulesPerSG <= 0 {
-			return nil, errors.New("managed security group split is enabled but max rules per SG are less than 0")
-		}
+
 		managedSGs, err := t.buildManagedSecurityGroups(
 			ctx, listenPortConfigByPort, ipAddressType, managedSGsSplitEnabled, managedSGsSplitMaxRulesPerSG,
 		)

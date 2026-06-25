@@ -11,12 +11,16 @@ import (
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/pkg/errors"
 	"sigs.k8s.io/aws-load-balancer-controller/pkg/algorithm"
+	"sigs.k8s.io/aws-load-balancer-controller/pkg/annotations"
 	ec2model "sigs.k8s.io/aws-load-balancer-controller/pkg/model/ec2"
 	elbv2model "sigs.k8s.io/aws-load-balancer-controller/pkg/model/elbv2"
 )
 
 const (
 	resourceIDManagedSecurityGroup = "ManagedLBSecurityGroup"
+	defaultMaxRulesPerSG                   = 200
+	annotationManagedSGSplitEnabled = annotations.AnnotationPrefixSK8s + "/" + annotations.ManagedSGsSplitEnabled
+	annotationManagedSGsSplitMaxRulesPerSG = annotations.AnnotationPrefixSK8s + "/" + annotations.ManagedSGsSplitMaxRulesPerSG
 )
 
 func (t *defaultModelBuildTask) buildManagedSecurityGroup(ctx context.Context, listenPortConfigByPort map[int32]listenPortConfig, ipAddressType elbv2model.IPAddressType) (*ec2model.SecurityGroup, error) {
@@ -51,6 +55,13 @@ func (t *defaultModelBuildTask) buildManagedSecurityGroups(
 	if err != nil {
 		return nil, err
 	}
+	t.logger.V(1).Info(
+		"managed security group split chunk",
+		"totalRules", len(ingressPermissions),
+		"maxRulesPerSG", maxRules,
+		"chunks", len(chunks),
+	)
+
 	var sgs []*ec2model.SecurityGroup
 	for i, chunk := range chunks {
 		sgs = append(sgs, t.newManagedSecurityGroup(i, baseName, tags, chunk))
@@ -78,8 +89,8 @@ func (t *defaultModelBuildTask) newManagedSecurityGroup(
 }
 
 func chunkIPPermissions(permissions []ec2model.IPPermission, maxRules int) ([][]ec2model.IPPermission, error) {
-	if maxRules < 0 {
-		return nil, errors.New("maxRules cannot be negative")
+	if maxRules < 1 {
+		return nil, errors.New("maxRules cannot be less than 1")
 	}
 
 	sorted := make([]ec2model.IPPermission, len(permissions))
@@ -221,4 +232,76 @@ func (t *defaultModelBuildTask) buildManagedSecurityGroupIngressPermissions(_ co
 		}
 	}
 	return permissions
+}
+
+func (t *defaultModelBuildTask) buildManagedSGsSplitConfig(_ context.Context) (bool, int, error) {
+	enableValues := make(map[bool]struct{})
+	enabled := false
+	for _, member := range t.ingGroup.Members {
+		if member.IngClassConfig.IngClassParams == nil {
+			continue
+		}
+		ann := member.IngClassConfig.IngClassParams.Annotations
+		if len(ann) == 0 {
+			continue
+		}
+
+		rawEnabled := false
+		exists, err := t.annotationParser.ParseBoolAnnotation(
+			annotationManagedSGSplitEnabled, &rawEnabled, ann,
+			annotations.WithExact(),
+		)
+		if err != nil {
+			return false, 0, err
+		}
+		if exists {
+			enableValues[rawEnabled] = struct{}{}
+			enabled = rawEnabled
+		}
+	}
+	if len(enableValues) > 1 {
+		return false, 0, errors.Errorf("conflicting %s across IngressClassParams", annotationManagedSGSplitEnabled)
+	}
+
+	// when split is disabled, the max-rules annotation is irrelevant and is not parsed/validated.
+	if !enabled {
+		return false, defaultMaxRulesPerSG, nil
+	}
+
+	maxRulesValues := make(map[int32]struct{})
+	maxRulesPerSG := defaultMaxRulesPerSG
+	for _, member := range t.ingGroup.Members {
+		if member.IngClassConfig.IngClassParams == nil {
+			continue
+		}
+		ann := member.IngClassConfig.IngClassParams.Annotations
+		if len(ann) == 0 {
+			continue
+		}
+
+		rawMaxRulesPerSG := int32(0)
+		exists, err := t.annotationParser.ParseInt32Annotation(
+			annotationManagedSGsSplitMaxRulesPerSG, &rawMaxRulesPerSG, ann,
+			annotations.WithExact(),
+		)
+		if err != nil {
+			return false, 0, err
+		}
+		if exists {
+			maxRulesValues[rawMaxRulesPerSG] = struct{}{}
+			maxRulesPerSG = int(rawMaxRulesPerSG)
+		}
+	}
+	if len(maxRulesValues) > 1 {
+		return false, 0, errors.Errorf(
+			"conflicting %s across IngressClassParams", annotationManagedSGsSplitMaxRulesPerSG,
+		)
+	}
+	if maxRulesPerSG < 1 {
+		return false, 0, errors.Errorf(
+			"%s must be >= 1, got: %d", annotationManagedSGsSplitMaxRulesPerSG, maxRulesPerSG,
+		)
+	}
+
+	return true, maxRulesPerSG, nil
 }
