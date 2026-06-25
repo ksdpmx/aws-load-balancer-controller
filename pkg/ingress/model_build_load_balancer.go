@@ -283,13 +283,54 @@ func (t *defaultModelBuildTask) buildLoadBalancerSecurityGroups(ctx context.Cont
 	}
 	var lbSGTokens []core.StringToken
 	if len(sgNameOrIDsViaAnnotation) == 0 {
-		managedSG, err := t.buildManagedSecurityGroup(ctx, listenPortConfigByPort, ipAddressType)
+		for port, cfg := range listenPortConfigByPort {
+			t.logger.Info(
+				"debugdebugdebug",
+				"port", port,
+				"protocol", cfg.protocol,
+				"inboundCIDRv4s", cfg.inboundCIDRv4s,
+				"inboundCIDRv6s", cfg.inboundCIDRv6s,
+				"prefixLists", cfg.prefixLists,
+				"sslPolicy", awssdk.ToString(cfg.sslPolicy),
+				"tlsCerts", cfg.tlsCerts,
+				"mutualAuthentication", fmt.Sprintf("%+v", cfg.mutualAuthentication),
+			)
+		}
+		// TODO read from annotations
+		managedSGsSplitEnabled := true
+		managedSGsSplitMaxRulesPerSG := 8 // testing
+		if managedSGsSplitEnabled && managedSGsSplitMaxRulesPerSG <= 0 {
+			return nil, errors.New("managed security group split is enabled but max rules per SG are less than 0")
+		}
+		managedSGs, err := t.buildManagedSecurityGroups(
+			ctx, listenPortConfigByPort, ipAddressType, managedSGsSplitEnabled, managedSGsSplitMaxRulesPerSG,
+		)
 		if err != nil {
 			return nil, err
 		}
-		lbSGTokens = append(lbSGTokens, managedSG.GroupID())
+		// managed SG number cannot be over 5
+		backendSGCount := 0
+		if t.enableBackendSG {
+			backendSGCount = 1
+		}
+		const maxSGsPerLB = 5
+		if len(managedSGs)+backendSGCount > maxSGsPerLB {
+			return nil, errors.Errorf(
+				"managed security group split needs %d frontend + %d backend security groups, "+
+					"exceeding the limit of %d per load balancer; raise the per-LB SG quota, "+
+					"increase max-rules-per-SG, or reduce inbound CIDRs",
+				len(managedSGs), backendSGCount, maxSGsPerLB,
+			)
+		}
+
+		for _, managedSG := range managedSGs {
+			lbSGTokens = append(lbSGTokens, managedSG.GroupID())
+		}
 		if !t.enableBackendSG {
-			t.backendSGIDToken = managedSG.GroupID()
+			if managedSGsSplitEnabled {
+				return nil, errors.New("managed security group split requires the backend security group feature to be enabled")
+			}
+			t.backendSGIDToken = managedSGs[0].GroupID()
 		} else {
 			backendSGID, err := t.backendSGProvider.Get(ctx, networking.ResourceTypeIngress, k8s.ToSliceOfNamespacedNames(t.ingGroup.Members))
 			if err != nil {
